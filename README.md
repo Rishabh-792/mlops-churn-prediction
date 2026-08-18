@@ -8,10 +8,14 @@
 ![models](https://img.shields.io/badge/models-CatBoost%20%C3%976-orange)
 
 A configuration-driven churn pipeline: fetch → preprocess → segment → train → score.
-Every number below is produced by `python -m pipelines.training_pipeline` and
-committed to [`artifacts/metrics.json`](artifacts/metrics.json). CI retrains on
-every push and **fails the build if the committed metrics stop reproducing**, so
-the results in this README cannot quietly drift away from the code.
+Every model metric below is produced by `python -m pipelines.training_pipeline`
+and committed to [`artifacts/metrics.json`](artifacts/metrics.json). CI retrains
+on every push and **fails the build if the committed metrics stop reproducing**.
+
+That gate compares `artifacts/metrics.json` against its committed self — it does
+not parse this README, so the table below is transcribed by hand and can drift
+from the artifact even while CI is green. The artifact is the source of truth;
+if the two disagree, the artifact is right.
 
 ## Why segment first
 
@@ -53,27 +57,50 @@ Regenerate with `python -m pipelines.training_pipeline`.
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | power_user | activity | 0.812 | 0.356 | 0.422 | 0.286 | 0.806 | 767 | 0.141 |
 | power_user | profile | 0.776 | 0.334 | 0.394 | 0.270 | 0.732 | 767 | 0.141 |
-| casual | activity | 0.767 | 0.578 | 0.621 | 0.536 | 0.739 | 395 | 0.329 |
+| casual | activity | 0.767 | 0.577 | 0.621 | 0.536 | 0.738 | 395 | 0.329 |
 | casual | profile | 0.773 | 0.615 | 0.634 | 0.551 | 0.746 | 395 | 0.329 |
 | guest | activity | 0.759 | 0.790 | 0.710 | 0.700 | 0.721 | 248 | 0.548 |
-| guest | profile | 0.775 | 0.796 | 0.744 | 0.731 | 0.757 | 248 | 0.548 |
-| **weighted** | | **0.783** | **0.494** | **0.526** | | | **2,820** | |
+| guest | profile | 0.775 | 0.796 | 0.744 | 0.730 | 0.757 | 248 | 0.548 |
+| **weighted** | | **0.783** | **0.494** | **0.526** | | | **1,410** | |
+
+**What the weighted row is, and is not.** It is an `n_test`-weighted mean over
+the six *per-view* models. There are **1,410 distinct held-out customers**
+(767 + 395 + 248); each contributes to two views, so the six `n_test` values
+sum to 2,820 while the evaluation set is half that. The weighting is
+unaffected — both views of a segment carry equal weight, so the duplication
+cancels — but the population size is 1,410.
+
+**These are per-view metrics, not the ensemble's.** `prediction_pipeline`
+averages the two view probabilities per segment (the diagram above); that
+averaged ensemble is *not* separately scored in `artifacts/metrics.json`, so
+no number here describes it. Scoring it is the first roadmap item below.
 
 **Reading these honestly.** ROC-AUC is flattered by class imbalance, so PR-AUC
 is reported alongside it and tracks each segment's base rate as it should
 (0.36 at 14% positives, 0.80 at 55%). Precision on `power_user` is low by
 design: `scale_pos_weight` trades precision for recall so the model surfaces
 ~80% of churners in the segment that is cheapest to retain and most expensive
-to lose. If you need the other trade, move the decision threshold — the
-probabilities are calibrated (Brier scores are in the metrics artifact), not
-argmaxed.
+to lose. If you need the other trade, move the decision threshold — the models
+emit probabilities, not argmax labels.
 
-**Comparison point.** Published single-model baselines on this dataset land
-around 0.84 ROC-AUC. The segmented ensemble scores lower on that metric
-precisely because segmentation removes tenure — the strongest single predictor
-— from within-segment variance. The trade buys per-segment calibration and
-actionability. Reporting only the number that flatters the design would be the
-easier choice and the wrong one.
+**Do not read those probabilities as absolute risks.** `scale_pos_weight`
+deliberately shifts them away from the base rate, which is decalibration by
+construction: mean predicted risk on `power_user` is 0.43 against an actual
+0.14. Brier scores are in the metrics artifact, but a Brier score is a proper
+score, not evidence of calibration — on `power_user` it is worse than
+predicting the base rate for everyone. Fit a per-segment isotonic or Platt
+calibrator on the validation split before treating a score as a probability,
+and note that the shared 0.70 `high` band is an absolute cut across segments
+whose true rates span 0.14 to 0.55.
+
+**Comparison point.** A single global model on this dataset is commonly
+reported around 0.84 ROC-AUC, but that figure is uncited here and is not
+directly comparable: it is a full-population AUC, while the 0.783 above is a
+weighted mean of within-segment AUCs. Segmentation restricts the range of
+tenure — the strongest single predictor — inside each segment, which lowers
+within-segment AUC while buying per-segment actionability. Training one global
+model on the same split would make this an internal, reproducible comparison;
+that is a roadmap item, not a claim made here.
 
 ## Quickstart
 
@@ -177,10 +204,16 @@ running system.
 
 ## Roadmap
 
-- Enable the Optuna search in CI (`tuning.enabled`); it is implemented and
-  tested but not part of the committed run.
+- **Score the ensemble.** `metrics.json` currently reports the six per-view
+  models; the averaged ensemble that actually scores customers is unmeasured.
+- **Calibrate.** Per-segment isotonic/Platt on the validation split, with
+  reliability curves in the artifact, so the risk bands mean what they say.
+- **A global-model baseline** on the same split, to replace the uncited 0.84
+  literature figure with an internal, reproducible comparison.
+- `utils/model_tune_utils.py` (Optuna) is written but **unwired** — no pipeline
+  or test imports it, and `tuning.enabled` is read by nothing. Wire it or
+  delete it and drop the `optuna` dependency.
 - Drift monitoring on the scored population.
-- Calibration curves per segment in the metrics artifact.
 
 ## License
 

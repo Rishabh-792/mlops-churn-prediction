@@ -218,3 +218,12 @@ mlflow.db
 artifacts/models/
 artifacts/predictions.csv
 logs/
+
+# Secrets and credentials. Nothing here today; the guardrail is the point.
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+id_rsa
