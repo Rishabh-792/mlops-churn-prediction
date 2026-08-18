@@ -85,7 +85,7 @@ python -m pipelines.preprocessing_pipeline   # clean, engineer, validate
 python -m pipelines.training_pipeline        # train 6 models, write metrics
 python -m pipelines.prediction_pipeline      # score every customer
 
-pytest -q                                    # 33 tests, no network needed
+pytest -q                                    # 33 tests, 85% cov, no network
 mlflow ui                                    # inspect runs
 ```
 
@@ -148,7 +148,7 @@ Design choices worth calling out:
 ## Testing
 
 ```bash
-pytest -q          # 33 tests
+pytest -q          # 33 tests, 85% line coverage
 ruff check .       # lint
 ```
 
