@@ -1,70 +1,109 @@
 """
 prediction_pipeline.py
 
-Production offline inference pipeline for churn predictions.
+Stage 4: trained ensemble + customer frame -> scored risk table.
 
-Pipeline steps:
-1. Load trained models (Ensemble)
-2. Load production user history data
-3. Build features for each segment
-4. Generate model predictions
-5. Compute risk scores
-6. Format and save results
+Each customer is routed to their own segment's models, scored, and assigned a
+risk band and a recommended action. Output is a CSV keyed by customer id.
+
+Usage:
+    python -m pipelines.prediction_pipeline
 """
 
-import pandas as pd
-from prediction_utils import EnsembleModels
-from settings_manager import SettingsManager
-from pipeline_enums import OptimizationGoal
-import logging
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 
-import mlflow
-from catboost import CatBoostClassifier
+import pandas as pd
 
-# Add utils to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
+from utils.core_utils import ensure_dir, get_logger
+from utils.feature_builders import split_by_segment
+from utils.pipeline_errors import SchemaValidationFault
+from utils.prediction_utils import EnsembleModels, band_for
+from utils.settings_manager import PipelineSettings, SettingsManager
 
-
-logger = logging.getLogger(__name__)
+logger = get_logger("prediction")
 
 
 class PredictionPipeline:
-    def __init__(self, config_path: str = "configs/config.json"):
-        self.settings = SettingsManager(
-            config_path, goal=OptimizationGoal.BALANCED).load()
-        self.models = None
+    """Scores a customer population with the trained ensemble."""
 
-    def _load_models(self) -> None:
-        """Mock loading models from a local registry or directory."""
-        logger.info("Loading ensemble models...")
-        # In a real scenario, this might fetch from MLflow or S3
-        self.models = EnsembleModels(
-            power_user_activity=CatBoostClassifier(),
-            power_user_profile=CatBoostClassifier(),
-            casual_activity=CatBoostClassifier(),
-            casual_profile=CatBoostClassifier()
+    def __init__(self, settings: PipelineSettings) -> None:
+        self.settings = settings
+
+    def run(self, df: pd.DataFrame | None = None) -> pd.DataFrame:
+        if df is None:
+            df = self._load()
+
+        ensemble = EnsembleModels.load_from_directory(self.settings.outputs.model_dir)
+        segments = split_by_segment(
+            df,
+            column=self.settings.segmentation.column,
+            thresholds=self.settings.segmentation.segments,
         )
 
-    def run(self) -> pd.DataFrame:
-        self._load_models()
-        logger.info("Generating predictions...")
+        id_col = self.settings.data.id_column
+        results = []
+        skipped = 0
 
-        # Mocking the feature building and prediction logic
-        results = pd.DataFrame({
-            "user_id": ["u1", "u2", "u3"],
-            "segment": ["power_user", "casual", "power_user"],
-            "churn_risk_score": [0.85, 0.12, 0.65],
-            "recommended_action": ["High Priority Retention", "None", "Standard Outreach"]
-        })
+        for name, frame in segments.items():
+            if name not in ensemble.models:
+                # A segment with no trained model is reported, never guessed at.
+                logger.warning("No model for segment %s; %d customers unscored", name, len(frame))
+                skipped += len(frame)
+                continue
 
-        return results
+            scores = ensemble.score(frame, name)
+            bands = [band_for(s) for s in scores]
+            results.append(
+                pd.DataFrame(
+                    {
+                        id_col: frame[id_col].to_numpy(),
+                        "segment": name,
+                        "churn_risk_score": scores.round(6).to_numpy(),
+                        "risk_band": [b for b, _ in bands],
+                        "recommended_action": [a for _, a in bands],
+                    }
+                )
+            )
+
+        if not results:
+            raise SchemaValidationFault("No customers could be scored", code="SYS-302")
+
+        out = pd.concat(results, ignore_index=True).sort_values(
+            "churn_risk_score", ascending=False
+        )
+
+        path = Path(self.settings.outputs.predictions_path)
+        ensure_dir(str(path.parent))
+        out.to_csv(path, index=False)
+
+        logger.info(
+            "Scored %d customers (%d unscored) | high-risk %d | wrote %s",
+            len(out),
+            skipped,
+            int((out["risk_band"] == "high").sum()),
+            path,
+        )
+        return out
+
+    def _load(self) -> pd.DataFrame:
+        path = Path(self.settings.data.processed_path)
+        if not path.exists():
+            raise SchemaValidationFault(
+                f"Processed dataset not found at {path}. "
+                "Run `python -m pipelines.preprocessing_pipeline` first.",
+                code="SYS-103",
+            )
+        return pd.read_parquet(path)
+
+
+def main() -> int:
+    settings = SettingsManager().load()
+    PredictionPipeline(settings).run()
+    return 0
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    pipeline = PredictionPipeline()
-    predictions = pipeline.run()
-    predictions.to_csv("churn_predictions.csv", index=False)
-    logger.info("Predictions saved to churn_predictions.csv")
+    sys.exit(main())

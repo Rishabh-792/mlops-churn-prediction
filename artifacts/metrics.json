@@ -1,0 +1,144 @@
+{
+  "project": "Customer Churn Prediction Pipeline",
+  "trained_at_utc": "2026-08-18T02:58:48+00:00",
+  "dataset": {
+    "source_url": "https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv",
+    "sha256": "16320c9c1ec72448db59aa0a26a0b95401046bef5d02fd3aeb906448e3055e91"
+  },
+  "params": {
+    "iterations": 500,
+    "learning_rate": 0.05,
+    "depth": 6,
+    "eval_metric": "AUC",
+    "random_seed": 42
+  },
+  "segments": {
+    "power_user": {
+      "activity": {
+        "roc_auc": 0.811956,
+        "pr_auc": 0.356314,
+        "f1": 0.42233,
+        "precision": 0.286184,
+        "recall": 0.805556,
+        "brier": 0.20224,
+        "n_train": 2299,
+        "n_val": 767,
+        "n_test": 767,
+        "positive_rate": 0.140808,
+        "top_features": {
+          "Contract": 43.5238,
+          "avg_monthly_spend": 21.4635,
+          "tenure": 15.2197,
+          "MonthlyCharges": 6.8665,
+          "TotalCharges": 6.2943
+        }
+      },
+      "profile": {
+        "roc_auc": 0.776422,
+        "pr_auc": 0.334205,
+        "f1": 0.394015,
+        "precision": 0.269625,
+        "recall": 0.731481,
+        "brier": 0.188567,
+        "n_train": 2299,
+        "n_val": 767,
+        "n_test": 767,
+        "positive_rate": 0.140808,
+        "top_features": {
+          "InternetService": 27.9708,
+          "OnlineSecurity": 17.1197,
+          "TechSupport": 12.1462,
+          "MultipleLines": 8.6306,
+          "OnlineBackup": 8.4815
+        }
+      }
+    },
+    "casual": {
+      "activity": {
+        "roc_auc": 0.76672,
+        "pr_auc": 0.57747,
+        "f1": 0.621359,
+        "precision": 0.536313,
+        "recall": 0.738462,
+        "brier": 0.193949,
+        "n_train": 1182,
+        "n_val": 395,
+        "n_test": 395,
+        "positive_rate": 0.329114,
+        "top_features": {
+          "Contract": 23.6587,
+          "avg_monthly_spend": 16.1458,
+          "PaymentMethod": 15.6005,
+          "MonthlyCharges": 14.3817,
+          "PaperlessBilling": 13.1876
+        }
+      },
+      "profile": {
+        "roc_auc": 0.773338,
+        "pr_auc": 0.615399,
+        "f1": 0.633987,
+        "precision": 0.551136,
+        "recall": 0.746154,
+        "brier": 0.191272,
+        "n_train": 1182,
+        "n_val": 395,
+        "n_test": 395,
+        "positive_rate": 0.329114,
+        "top_features": {
+          "InternetService": 26.4647,
+          "MultipleLines": 13.3716,
+          "OnlineBackup": 12.9649,
+          "StreamingTV": 11.8036,
+          "OnlineSecurity": 8.9125
+        }
+      }
+    },
+    "guest": {
+      "activity": {
+        "roc_auc": 0.758994,
+        "pr_auc": 0.789839,
+        "f1": 0.710145,
+        "precision": 0.7,
+        "recall": 0.720588,
+        "brier": 0.200174,
+        "n_train": 742,
+        "n_val": 248,
+        "n_test": 248,
+        "positive_rate": 0.548387,
+        "top_features": {
+          "avg_monthly_spend": 18.7724,
+          "PaymentMethod": 14.94,
+          "MonthlyCharges": 14.0226,
+          "tenure": 13.6523,
+          "TotalCharges": 11.3497
+        }
+      },
+      "profile": {
+        "roc_auc": 0.774783,
+        "pr_auc": 0.796334,
+        "f1": 0.743682,
+        "precision": 0.730496,
+        "recall": 0.757353,
+        "brier": 0.207731,
+        "n_train": 742,
+        "n_val": 248,
+        "n_test": 248,
+        "positive_rate": 0.548387,
+        "top_features": {
+          "InternetService": 33.6284,
+          "OnlineSecurity": 14.5799,
+          "OnlineBackup": 12.1033,
+          "MultipleLines": 10.8616,
+          "StreamingTV": 10.8567
+        }
+      }
+    }
+  },
+  "summary": {
+    "roc_auc": 0.782619,
+    "pr_auc": 0.494391,
+    "f1": 0.525726,
+    "models_trained": 6,
+    "total_test_rows": 2820
+  }
+}

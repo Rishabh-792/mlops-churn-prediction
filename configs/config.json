@@ -1,35 +1,90 @@
 {
-  "project_name": "Customer Engagement and Churn Prediction Pipeline",
+  "project_name": "Customer Churn Prediction Pipeline",
+  "data": {
+    "raw_path": "data/raw/telco_customer_churn.csv",
+    "processed_path": "data/processed/telco_clean.parquet",
+    "source_url": "https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv",
+    "sha256": "16320c9c1ec72448db59aa0a26a0b95401046bef5d02fd3aeb906448e3055e91",
+    "id_column": "customerID"
+  },
   "schema": {
     "mandatory_features": [
-      "user_id",
-      "account_creation_date",
-      "total_sessions",
-      "last_active_date"
+      "customerID",
+      "tenure",
+      "MonthlyCharges",
+      "TotalCharges"
     ],
     "categorical_features": [
-      "subscription_plan",
-      "acquisition_channel",
-      "primary_device_os"
+      "gender",
+      "Partner",
+      "Dependents",
+      "PhoneService",
+      "MultipleLines",
+      "InternetService",
+      "OnlineSecurity",
+      "OnlineBackup",
+      "DeviceProtection",
+      "TechSupport",
+      "StreamingTV",
+      "StreamingMovies",
+      "Contract",
+      "PaperlessBilling",
+      "PaymentMethod"
     ],
-    "target_variable": "will_churn_in_window"
+    "numeric_features": [
+      "tenure",
+      "MonthlyCharges",
+      "TotalCharges",
+      "SeniorCitizen",
+      "avg_monthly_spend",
+      "services_subscribed"
+    ],
+    "target_variable": "Churn"
   },
-  "temporal": {
-    "train_start_date": "2023-01-01",
-    "train_end_date": "2024-12-31",
-    "prediction_window_days": 30
-  },
-  "segments": {
-    "power_user": {
-      "min_activity_threshold": 25
-    },
-    "casual": {
-      "min_activity_threshold": 5,
-      "max_activity_threshold": 24
-    },
-    "guest": {
-      "min_activity_threshold": 0,
-      "max_activity_threshold": 4
+  "segmentation": {
+    "column": "tenure",
+    "description": "Customers are segmented by tenure in months. Each segment gets its own model because churn drivers differ sharply by lifecycle stage.",
+    "segments": {
+      "power_user": {
+        "min_activity_threshold": 25
+      },
+      "casual": {
+        "min_activity_threshold": 5,
+        "max_activity_threshold": 24
+      },
+      "guest": {
+        "min_activity_threshold": 0,
+        "max_activity_threshold": 4
+      }
     }
+  },
+  "training": {
+    "test_size": 0.2,
+    "val_size": 0.2,
+    "random_seed": 42,
+    "min_segment_rows": 200,
+    "catboost": {
+      "iterations": 500,
+      "learning_rate": 0.05,
+      "depth": 6,
+      "eval_metric": "AUC",
+      "early_stopping_rounds": 50,
+      "random_seed": 42
+    }
+  },
+  "tuning": {
+    "enabled": false,
+    "n_trials": 30,
+    "min_precision": 0.5,
+    "min_recall": 0.5
+  },
+  "tracking": {
+    "tracking_uri": "sqlite:///mlflow.db",
+    "experiment_name": "churn-prediction"
+  },
+  "outputs": {
+    "model_dir": "artifacts/models",
+    "metrics_path": "artifacts/metrics.json",
+    "predictions_path": "artifacts/predictions.csv"
   }
 }

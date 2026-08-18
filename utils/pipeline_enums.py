@@ -6,7 +6,6 @@ Ensures IDE autocomplete and strict type checking across the system.
 from enum import Enum
 from typing import Literal
 
-
 # =========================================================================
 # SEGMENT & GOAL ENUMERATIONS
 # =========================================================================
@@ -14,7 +13,7 @@ from typing import Literal
 class UserSegment(str, Enum):
     """
     Categorization of users based on their historical platform engagement.
-    
+
     Attributes:
         POWER_USER: Extensive history -> Full complex feature set.
         CASUAL: Moderate history -> Standard feature set.

@@ -1,33 +1,15 @@
-# Forklift Service Prediction Pipeline - Dependencies
-# Python 3.8+
+# Customer Churn Prediction Pipeline - runtime dependencies
+# Python 3.10+
 
-# Core ML & Data Processing
+# Core ML & data processing
 pandas>=2.0.0
 numpy>=1.24.0
-scikit-learn>=1.0.0
+scikit-learn>=1.3.0
 catboost>=1.2.0
+pyarrow>=14.0.0
 
-# Experiment Tracking & Model Management
-mlflow>=2.0.0
+# Experiment tracking & model registry
+mlflow>=2.9.0
 
-# Hyperparameter Optimization
+# Hyperparameter optimization
 optuna>=3.0.0
-
-# Configuration & Utilities
-click>=8.0.0
-pyyaml>=5.4
-
-# Logging & Monitoring
-python-json-logger>=2.0.0
-
-# AWS & Cloud
-boto3>=1.20.0
-botocore>=1.23.0
-
-# Development & Quality
-black>=21.0
-isort>=5.0
-flake8>=3.9
-pylint>=2.10
-pytest>=6.2
-pytest-cov>=2.12

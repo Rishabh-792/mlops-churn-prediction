@@ -1,0 +1,11 @@
+.venv/
+.git/
+data/
+mlruns/
+artifacts/models/
+artifacts/predictions.csv
+logs/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
