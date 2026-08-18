@@ -1,0 +1,154 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        run: pytest -q --cov=utils --cov=pipelines --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage artifact
+        if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          retention-days: 14
+
+  # Trains on the real dataset and fails if quality regresses. This is the
+  # check that keeps the numbers in the README honest: they are regenerated
+  # here, not transcribed by hand.
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch dataset (checksum-verified)
+        run: python -m scripts.download_data
+
+      - name: Run the full pipeline
+        run: |
+          python -m pipelines.preprocessing_pipeline
+          python -m pipelines.training_pipeline
+          python -m pipelines.prediction_pipeline
+
+      - name: Assert model quality has not regressed
+        run: |
+          python - <<'PY'
+          import json, sys
+
+          report = json.load(open("artifacts/metrics.json"))
+          summary = report["summary"]
+          print(json.dumps(summary, indent=2))
+
+          # Floors, not targets. They sit below the committed results so that
+          # ordinary run-to-run variance does not fail the build, but a real
+          # regression (a broken feature, a leaked split, a bad merge) does.
+          floors = {"roc_auc": 0.74, "pr_auc": 0.44, "f1": 0.48}
+          failures = [
+              f"{k}={summary[k]:.4f} < floor {v}"
+              for k, v in floors.items()
+              if summary[k] < v
+          ]
+          if summary["models_trained"] != 6:
+              failures.append(f"expected 6 models, trained {summary['models_trained']}")
+          if failures:
+              sys.exit("Quality gate failed:\n  " + "\n  ".join(failures))
+          print("Quality gate passed.")
+          PY
+
+      - name: Verify committed metrics match this run
+        run: |
+          python - <<'PY'
+          import json, subprocess, sys
+
+          fresh = json.load(open("artifacts/metrics.json"))["summary"]
+          committed = json.loads(
+              subprocess.check_output(["git", "show", "HEAD:artifacts/metrics.json"])
+          )["summary"]
+
+          drift = {
+              k: (committed[k], fresh[k])
+              for k in ("roc_auc", "pr_auc", "f1")
+              if abs(committed[k] - fresh[k]) > 0.02
+          }
+          if drift:
+              sys.exit(
+                  "Committed metrics no longer reproduce:\n"
+                  + "\n".join(f"  {k}: committed {c:.4f} vs fresh {f:.4f}" for k, (c, f) in drift.items())
+                  + "\nRe-run the pipeline and commit artifacts/metrics.json."
+              )
+          print("Committed metrics reproduce within tolerance.")
+          PY
+
+      - name: Upload run artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-artifacts
+          path: |
+            artifacts/metrics.json
+            artifacts/predictions.csv
+          retention-days: 14
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      # The default docker driver cannot export a GHA cache; the container
+      # driver can, and still supports load: true.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: churn-pipeline:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run the test suite inside the image
+        run: docker run --rm churn-pipeline:ci pytest -q

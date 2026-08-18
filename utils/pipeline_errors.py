@@ -3,7 +3,6 @@ Custom exception hierarchy for the ML pipeline.
 Provides standardized error tracking and serialization for logs.
 """
 
-from typing import Dict, Optional
 
 # =========================================================================
 # ERROR REGISTRY
@@ -33,14 +32,14 @@ class MLSystemFault(Exception):
         self.code = code
         self.base_msg = SYSTEM_ERRORS.get(code, "Unregistered system error")
         self.context_msg = context_msg
-        
+
         self.formatted_message = f"[{self.code}] {self.base_msg}"
         if self.context_msg:
             self.formatted_message += f" | Context: {self.context_msg}"
-            
+
         super().__init__(self.formatted_message)
 
-    def serialize(self) -> Dict[str, str]:
+    def serialize(self) -> dict[str, str]:
         """Serializes error details for JSON loggers."""
         return {
             "error_code": self.code,

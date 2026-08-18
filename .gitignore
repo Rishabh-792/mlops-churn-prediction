@@ -205,3 +205,25 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ---- Project artifacts ----
+# The dataset is not committed: scripts/download_data.py fetches it and
+# verifies it against the SHA-256 pinned in configs/config.json.
+data/
+
+# Training outputs. metrics.json IS committed as the evidence behind the
+# numbers quoted in the README; models and predictions are regenerable.
+mlruns/
+mlflow.db
+artifacts/models/
+artifacts/predictions.csv
+logs/
+
+# Secrets and credentials. Nothing here today; the guardrail is the point.
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+id_rsa

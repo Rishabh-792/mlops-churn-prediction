@@ -1,90 +1,127 @@
 """
 training_pipeline.py
 
-Model training pipeline for the four-model ensemble.
+Stage 3: feature matrices -> trained per-segment ensemble + metrics artifact.
 
-This module trains the production ensemble of binary classifiers:
-1. Power User Segment - Activity Model
-2. Power User Segment - Profile Model
-3. Casual Segment - Activity Model
-4. Casual Segment - Profile Model
+One CatBoost classifier per (segment, feature view). Every model is early-stopped
+on a validation split and scored on a test split it has never seen; only those
+test metrics are written to the metrics artifact, which is what the README
+quotes. MLflow tracking is file-based by default, so a full run needs no server.
 
-All models are CatBoost classifiers with segment-specific hyperparameters.
-Results are logged to MLflow.
-Configuration is fully externalized.
+Usage:
+    python -m pipelines.training_pipeline
 """
 
-import pandas as pd  # Mocking data load
-from model_training_utils import train_segment_model
-from settings_manager import SettingsManager
-from pipeline_enums import UserSegment, OptimizationGoal
-import logging
+from __future__ import annotations
+
+import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Tuple
 
 import mlflow
 
-# Ensure utils can be imported
-sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
+from utils.core_utils import ensure_dir, get_logger
+from utils.model_training_utils import feature_importances, train_segment_model
+from utils.settings_manager import PipelineSettings, SettingsManager
 
-
-logger = logging.getLogger(__name__)
+logger = get_logger("training")
 
 
 class TrainingPipeline:
-    def __init__(self, config_path: str = "configs/config.json"):
-        self.settings_manager = SettingsManager(
-            config_path, goal=OptimizationGoal.BALANCED)
-        self.settings = self.settings_manager.load()
+    """Fits one model per segment and feature view, and records the results."""
 
-        # Set up MLflow
-        mlflow.set_tracking_uri("sqlite:///mlflow.db")
-        mlflow.set_experiment(self.settings.project_name)
+    def __init__(self, settings: PipelineSettings) -> None:
+        self.settings = settings
 
-    def load_data(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """Mock data loading function."""
-        # Replace with actual data loading logic
-        df = pd.DataFrame({"target": [0, 1, 0, 1] * 25})
-        features = pd.DataFrame(
-            {"feat1": range(100), "feat2": ["A", "B"] * 50})
-        return df, features
+    def run(self, segment_views: dict) -> dict:
+        mlflow.set_tracking_uri(self.settings.tracking.tracking_uri)
+        mlflow.set_experiment(self.settings.tracking.experiment_name)
 
-    def run(self) -> Dict[str, str]:
-        """Executes the pipeline and returns a dictionary of MLflow model URIs."""
-        logger.info("Starting ensemble training pipeline...")
+        cb = self.settings.training.catboost
+        report: dict = {
+            "project": self.settings.project_name,
+            "trained_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "dataset": {
+                "source_url": self.settings.data.source_url,
+                "sha256": self.settings.data.sha256,
+            },
+            "params": cb.as_params(),
+            "segments": {},
+        }
 
-        raw_df, feature_df = self.load_data()
-        model_uris = {}
+        with mlflow.start_run(run_name="churn-ensemble"):
+            mlflow.log_params(cb.as_params())
 
-        segments = ["power_user", "casual"]
-        model_types = ["activity", "profile"]
+            for segment, views in segment_views.items():
+                report["segments"][segment] = {}
+                for view, (features, target) in views.items():
+                    run_name = f"{segment}_{view}"
+                    model, result = train_segment_model(
+                        features=features,
+                        target=target,
+                        params=cb.as_params(),
+                        run_name=run_name,
+                        test_size=self.settings.training.test_size,
+                        val_size=self.settings.training.val_size,
+                        seed=self.settings.training.random_seed,
+                        early_stopping_rounds=cb.early_stopping_rounds,
+                        model_dir=self.settings.outputs.model_dir,
+                    )
+                    report["segments"][segment][view] = {
+                        **result.to_dict(),
+                        "top_features": feature_importances(model, features),
+                    }
 
-        with mlflow.start_run(run_name="Ensemble_Master_Run"):
-            for segment in segments:
-                for m_type in model_types:
-                    identifier = f"{segment}_{m_type}"
-                    logger.info(f"--- Training {identifier.upper()} ---")
+            report["summary"] = self._summarise(report["segments"])
+            mlflow.log_metrics(
+                {f"mean_{k}": v for k, v in report["summary"].items() if isinstance(v, float)}
+            )
 
-                    try:
-                        _, uri = train_segment_model(
-                            raw_df=raw_df,
-                            feature_df=feature_df,
-                            model_type=m_type,
-                            segment=segment,
-                            target_col=self.settings.schema.target_variable
-                        )
-                        model_uris[identifier] = uri
-                    except Exception as e:
-                        logger.error(
-                            f"Training failed for {identifier}: {str(e)}")
+        self._write(report)
+        return report
 
-        logger.info("Pipeline execution complete.")
-        return model_uris
+    def _summarise(self, segments: dict) -> dict:
+        """Row-count-weighted averages, so a small segment cannot flatter the headline."""
+        rows = 0
+        weighted = {"roc_auc": 0.0, "pr_auc": 0.0, "f1": 0.0}
+        model_count = 0
+        for views in segments.values():
+            for metrics in views.values():
+                n = metrics["n_test"]
+                rows += n
+                model_count += 1
+                for key in weighted:
+                    weighted[key] += metrics[key] * n
+        summary = {k: round(v / rows, 6) for k, v in weighted.items()} if rows else {}
+        summary["models_trained"] = model_count
+        summary["total_test_rows"] = rows
+        return summary
+
+    def _write(self, report: dict) -> None:
+        path = Path(self.settings.outputs.metrics_path)
+        ensure_dir(str(path.parent))
+        path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        logger.info("Wrote metrics to %s", path)
+
+        summary = report["summary"]
+        logger.info(
+            "Ensemble: %d models | weighted ROC-AUC %.4f | PR-AUC %.4f | F1 %.4f",
+            summary["models_trained"],
+            summary["roc_auc"],
+            summary["pr_auc"],
+            summary["f1"],
+        )
+
+
+def main() -> int:
+    from pipelines.feature_pipeline import FeaturePipeline
+
+    settings = SettingsManager().load()
+    segment_views = FeaturePipeline(settings).run()
+    TrainingPipeline(settings).run(segment_views)
+    return 0
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    pipeline = TrainingPipeline()
-    uris = pipeline.run()
-    print("Logged Models:", uris)
+    sys.exit(main())

@@ -1,72 +1,102 @@
 """
 preprocessing_pipeline.py
 
-Raw data preprocessing and user-level aggregation pipeline.
-Orchestrates cleaning, standardization, and MLflow run initialization.
+Stage 1: raw CSV -> validated, typed, cleaned parquet.
+
+Everything downstream assumes this stage has run, so it is deliberately strict:
+a schema violation raises rather than being coerced away silently.
+
+Usage:
+    python -m pipelines.preprocessing_pipeline
 """
 
+from __future__ import annotations
+
 import sys
-import mlflow
-from datetime import datetime
 from pathlib import Path
+
 import pandas as pd
-from typing import Optional
 
-# Add root to path to import utils
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.core_utils import ensure_dir, get_logger, require_columns
+from utils.feature_builders import engineer_features
+from utils.pipeline_errors import SchemaValidationFault
+from utils.settings_manager import PipelineSettings, SettingsManager
 
-from utils.settings_manager import SettingsManager
-from utils.core_utils import get_logger, ensure_dir, require_columns
-from utils.pipeline_enums import OptimizationGoal
+logger = get_logger("preprocessing")
+
 
 class PreprocessingPipeline:
-    def __init__(
-        self, 
-        goal: OptimizationGoal = OptimizationGoal.BALANCED,
-        run_name: Optional[str] = None
-    ):
-        self.settings = SettingsManager(goal=goal).load()
-        self.run_name = run_name or datetime.now().strftime("%Y-%m-%d_%H%M")
-        
-        # Setup paths and logging
-        self.logs_dir = ensure_dir("logs")
-        self.output_dir = ensure_dir("artifacts/preprocessed")
-        self.logger = get_logger("preprocessing_pipeline", log_dir=self.logs_dir)
-        
-        # Setup MLflow (Local Server Configuration)
-        mlflow.set_tracking_uri("http://127.0.0.1:5000")
-        mlflow.set_experiment(self.settings.project_name)
+    """Loads raw data, validates it against the configured schema, cleans it."""
 
-        self.logger.info("PreprocessingPipeline initialized")
-        self.logger.info(f"Optimization Goal: {goal.value}")
+    def __init__(self, settings: PipelineSettings) -> None:
+        self.settings = settings
 
-    def run(self, raw_data_path: Optional[str] = None) -> str:
-        """Executes the preprocessing workflow."""
-        with mlflow.start_run(run_name=f"prep_{self.run_name}"):
-            self.logger.info("Starting preprocessing run...")
-            
-            # 1. Load Data (Mocking data if path is None)
-            if raw_data_path and Path(raw_data_path).exists():
-                df = pd.read_csv(raw_data_path)
-            else:
-                self.logger.warning("No valid raw data path provided. Generating mock data.")
-                df = pd.DataFrame({
-                    "user_id": ["U1", "U1", "U2", "U3"],
-                    "session_id": ["S1", "S2", "S3", "S4"],
-                    "event_date": pd.to_datetime(["2023-10-01", "2023-10-05", "2023-10-02", "2023-10-06"]),
-                    "duration_minutes": [15, 45, 10, 5],
-                    "device_type": ["mobile", "desktop", "mobile", "tablet"]
-                })
+    def run(self) -> pd.DataFrame:
+        raw_path = Path(self.settings.data.raw_path)
+        if not raw_path.exists():
+            raise SchemaValidationFault(
+                f"Raw dataset not found at {raw_path}. "
+                "Run `python -m scripts.download_data` first.",
+                code="SYS-103",
+            )
 
-            # 2. Validate
-            require_columns(df, ["user_id", "session_id", "event_date"])
-            
-            # 3. Save aggregated output
-            output_path = Path(self.output_dir) / f"clean_events_{self.run_name}.parquet"
-            df.to_parquet(output_path, index=False)
-            self.logger.info(f"Preprocessed data saved to {output_path}")
-            
-            # 4. Log artifact to MLflow
-            mlflow.log_artifact(local_path=str(output_path))
-            
-            return str(output_path)
+        df = pd.read_csv(raw_path)
+        logger.info("Loaded %d rows x %d columns from %s", len(df), len(df.columns), raw_path)
+
+        require_columns(df, self.settings.schema.mandatory_features)
+        require_columns(df, [self.settings.schema.target_variable])
+
+        df = self._clean(df)
+        df = engineer_features(df)
+        df = self._encode_target(df)
+
+        out_path = Path(self.settings.data.processed_path)
+        ensure_dir(str(out_path.parent))
+        df.to_parquet(out_path, index=False)
+        logger.info("Wrote %d rows to %s", len(df), out_path)
+        return df
+
+    def _clean(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Handles the dataset's known quality defects."""
+        before = len(df)
+
+        # TotalCharges arrives as text and carries blanks for accounts whose
+        # first bill has not been issued. Those rows are genuine (tenure == 0),
+        # so impute rather than drop: a brand-new account has been charged
+        # nothing yet.
+        charges = pd.to_numeric(df["TotalCharges"].astype(str).str.strip(), errors="coerce")
+        blanks = int(charges.isna().sum())
+        if blanks:
+            logger.info("Imputing %d blank TotalCharges values as 0.0", blanks)
+        df["TotalCharges"] = charges.fillna(0.0)
+
+        df = df.drop_duplicates(subset=[self.settings.data.id_column])
+        if len(df) != before:
+            logger.info("Dropped %d duplicate rows", before - len(df))
+
+        return df
+
+    def _encode_target(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Maps the Yes/No label onto 0/1."""
+        target = self.settings.schema.target_variable
+        if df[target].dtype == "object":
+            mapping = {"Yes": 1, "No": 0}
+            unknown = set(df[target].unique()) - set(mapping)
+            if unknown:
+                raise SchemaValidationFault(
+                    f"Unexpected values in target {target!r}: {sorted(unknown)}", code="SYS-102"
+                )
+            df[target] = df[target].map(mapping)
+        df[target] = df[target].astype(int)
+        logger.info("Target %s positive rate: %.4f", target, df[target].mean())
+        return df
+
+
+def main() -> int:
+    settings = SettingsManager().load()
+    PreprocessingPipeline(settings).run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

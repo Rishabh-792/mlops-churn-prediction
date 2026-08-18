@@ -6,9 +6,7 @@ Optimizes F1 score subject to strict precision/recall business constraints.
 """
 
 import logging
-from typing import Dict, List, Tuple
 
-import numpy as np
 import optuna
 import pandas as pd
 from catboost import CatBoostClassifier
@@ -17,7 +15,7 @@ from sklearn.model_selection import train_test_split
 
 logger = logging.getLogger(__name__)
 
-def suggest_catboost_params(trial: optuna.Trial) -> Dict:
+def suggest_catboost_params(trial: optuna.Trial) -> dict:
     """Defines the hyperparameter search space."""
     return {
         "iterations": trial.suggest_int("iterations", 100, 1000),
@@ -30,43 +28,43 @@ def suggest_catboost_params(trial: optuna.Trial) -> Dict:
     }
 
 def tune_single_model(
-    X: pd.DataFrame, 
-    y: pd.Series, 
-    cat_features: List[str],
+    X: pd.DataFrame,
+    y: pd.Series,
+    cat_features: list[str],
     n_trials: int = 50,
     study_name: str = "churn_tuning",
     min_precision: float = 0.70,
     min_recall: float = 0.70
-) -> Tuple[Dict, optuna.Study]:
+) -> tuple[dict, optuna.Study]:
     """Optuna study orchestration with business constraints."""
-    
+
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
 
     def objective(trial: optuna.Trial) -> float:
         params = suggest_catboost_params(trial)
-        
+
         model = CatBoostClassifier(**params, cat_features=cat_features)
         model.fit(X_train, y_train, eval_set=(X_val, y_val), early_stopping_rounds=50)
-        
+
         y_pred = model.predict(X_val)
-        
+
         precision = precision_score(y_val, y_pred, zero_division=0)
         recall = recall_score(y_val, y_pred, zero_division=0)
         f1 = f1_score(y_val, y_pred, zero_division=0)
-        
+
         # Log metrics to Optuna for tracking
         trial.set_user_attr("precision", precision)
         trial.set_user_attr("recall", recall)
-        
+
         # Apply business constraints (Penalize trial if constraints not met)
         if precision < min_precision or recall < min_recall:
             raise optuna.TrialPruned(f"Constraints not met. P:{precision:.2f}, R:{recall:.2f}")
-            
+
         return f1
 
     study = optuna.create_study(direction="maximize", study_name=study_name)
     logger.info(f"Starting tuning study: {study_name} | Trials: {n_trials}")
     study.optimize(objective, n_trials=n_trials)
-    
+
     logger.info(f"Best Trial F1: {study.best_value}")
     return study.best_params, study

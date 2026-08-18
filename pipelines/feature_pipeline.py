@@ -1,58 +1,94 @@
 """
 feature_pipeline.py
 
-Data loading, validation, and feature engineering orchestration.
-Splits data into segments and applies specific feature aggregations.
+Stage 2: cleaned frame -> per-segment, per-view feature matrices.
+
+Output shape is ``{segment: {view: (features, target)}}`` — one entry per model
+the training stage will fit.
+
+Usage:
+    python -m pipelines.feature_pipeline
 """
+
+from __future__ import annotations
 
 import sys
 from pathlib import Path
+
 import pandas as pd
-from typing import Dict
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils.core_utils import get_logger
+from utils.feature_builders import FEATURE_VIEWS, build_view, split_by_segment
+from utils.pipeline_errors import SchemaValidationFault
+from utils.settings_manager import PipelineSettings, SettingsManager
 
-from utils.settings_manager import SettingsManager
-from utils.core_utils import get_logger, ensure_dir
-from utils.feature_builders import split_by_segment, build_power_user_features, build_guest_features
+logger = get_logger("features")
+
+SegmentViews = dict[str, dict[str, tuple[pd.DataFrame, pd.Series]]]
+
 
 class FeaturePipeline:
-    def __init__(self):
-        self.settings = SettingsManager().load()
-        self.logger = get_logger("feature_pipeline", log_dir="logs")
-        self.output_dir = ensure_dir("artifacts/features")
+    """Splits the population into segments and materialises each feature view."""
 
-    def run(self, clean_data_path: str) -> Dict[str, str]:
-        """Runs the feature engineering pipeline."""
-        self.logger.info(f"Loading cleaned data from {clean_data_path}")
-        df = pd.read_parquet(clean_data_path)
+    def __init__(self, settings: PipelineSettings) -> None:
+        self.settings = settings
 
-        # 1. Define thresholds based on config
-        thresholds = {
-            'power_user': self.settings.segments['power_user'].min_activity_threshold,
-            'guest': self.settings.segments['guest'].max_activity_threshold or 2
-        }
+    def run(self, df: pd.DataFrame | None = None) -> SegmentViews:
+        if df is None:
+            df = self._load()
 
-        # 2. Split data
-        self.logger.info("Splitting users into operational segments...")
-        power_df, casual_df, guest_df = split_by_segment(df, thresholds)
+        target_col = self.settings.schema.target_variable
+        segments = split_by_segment(
+            df,
+            column=self.settings.segmentation.column,
+            thresholds=self.settings.segmentation.segments,
+        )
 
-        # 3. Build Features
-        power_features = build_power_user_features(power_df)
-        guest_features = build_guest_features(guest_df)
-        # Note: casual_features omitted for brevity, logic remains the same
+        out: SegmentViews = {}
+        minimum = self.settings.training.min_segment_rows
 
-        # 4. Save Artifacts
-        paths = {}
-        if not power_features.empty:
-            p_path = Path(self.output_dir) / "power_user_features.csv"
-            power_features.to_csv(p_path, index=False)
-            paths["power_user"] = str(p_path)
-            
-        if not guest_features.empty:
-            g_path = Path(self.output_dir) / "guest_features.csv"
-            guest_features.to_csv(g_path, index=False)
-            paths["guest"] = str(g_path)
+        for name, frame in segments.items():
+            if len(frame) < minimum:
+                # Too few rows to split three ways and still trust the metrics.
+                logger.warning(
+                    "Skipping segment %s: %d rows < min_segment_rows=%d", name, len(frame), minimum
+                )
+                continue
 
-        self.logger.info("Feature engineering complete.")
-        return paths
+            target = frame[target_col]
+            out[name] = {
+                view: (build_view(frame, view), target) for view in FEATURE_VIEWS
+            }
+            logger.info(
+                "Segment %-11s rows=%-6d churn=%.4f views=%s",
+                name,
+                len(frame),
+                target.mean(),
+                ",".join(FEATURE_VIEWS),
+            )
+
+        if not out:
+            raise SchemaValidationFault("No segment met min_segment_rows", code="SYS-401")
+
+        logger.info("Prepared %d models' worth of features", sum(len(v) for v in out.values()))
+        return out
+
+    def _load(self) -> pd.DataFrame:
+        path = Path(self.settings.data.processed_path)
+        if not path.exists():
+            raise SchemaValidationFault(
+                f"Processed dataset not found at {path}. "
+                "Run `python -m pipelines.preprocessing_pipeline` first.",
+                code="SYS-103",
+            )
+        return pd.read_parquet(path)
+
+
+def main() -> int:
+    settings = SettingsManager().load()
+    FeaturePipeline(settings).run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

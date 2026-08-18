@@ -6,14 +6,14 @@ This module contains NO ML logic and NO domain knowledge.
 """
 
 import logging
-import os
 from pathlib import Path
-from typing import List, Optional
+
 import pandas as pd
 
 from .pipeline_errors import SchemaValidationFault
 
-def get_logger(name: str, log_dir: Optional[str] = "logs") -> logging.Logger:
+
+def get_logger(name: str, log_dir: str | None = "logs") -> logging.Logger:
     """Configures and returns a logger with console and file handlers."""
     logger = logging.getLogger(name)
     if logger.hasHandlers():
@@ -41,7 +41,7 @@ def ensure_dir(dir_path: str) -> str:
     Path(dir_path).mkdir(parents=True, exist_ok=True)
     return dir_path
 
-def require_columns(df: pd.DataFrame, required_cols: List[str]) -> None:
+def require_columns(df: pd.DataFrame, required_cols: list[str]) -> None:
     """Validates that all required columns exist in the DataFrame."""
     missing = [col for col in required_cols if col not in df.columns]
     if missing:

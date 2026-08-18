@@ -1,51 +1,91 @@
 """
 prediction_utils.py
 
-Unified prediction engine for customer churn prediction.
-Combines multiple prediction strategies into a single module.
+Loading and scoring for the trained per-segment ensemble.
+
+A customer is routed to the models for their own segment, scored by each
+feature view, and the view probabilities are averaged. Routing is explicit:
+a customer whose segment has no trained model is reported rather than
+silently scored by the wrong one.
 """
 
+from __future__ import annotations
+
 import logging
-from dataclasses import dataclass
-from typing import Dict, Any, Optional
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import pandas as pd
-from catboost import CatBoostClassifier
+from catboost import CatBoostClassifier, Pool
+
+from .feature_builders import build_view
+from .pipeline_errors import MLSystemFault
 
 logger = logging.getLogger(__name__)
 
-# =========================================================================
-# MODEL CONTAINER
-# =========================================================================
+# Risk bands, and the action each one implies. Thresholds are business
+# choices, not model outputs, which is why they live here and not in the model.
+RISK_BANDS = [
+    (0.70, "high", "priority_retention_outreach"),
+    (0.40, "medium", "targeted_offer"),
+    (0.00, "low", "monitor"),
+]
+
 
 @dataclass
 class EnsembleModels:
-    """
-    Holds the 4 binary CatBoost models used in production.
-    """
-    power_user_activity: CatBoostClassifier
-    power_user_profile: CatBoostClassifier
-    casual_activity: CatBoostClassifier
-    casual_profile: CatBoostClassifier
+    """Trained models keyed by segment, then by feature view."""
+
+    models: dict[str, dict[str, CatBoostClassifier]] = field(default_factory=dict)
 
     @classmethod
-    def load_from_directory(cls, base_dir: str) -> 'EnsembleModels':
-        """Helper to instantiate from a local directory structure."""
-        import os
-        
-        models = {}
-        expected_models = [
-            "power_user_activity", "power_user_profile", 
-            "casual_activity", "casual_profile"
-        ]
-        
-        for name in expected_models:
-            model_path = os.path.join(base_dir, name, "model.cb")
-            if not os.path.exists(model_path):
-                raise FileNotFoundError(f"Missing model artifact: {model_path}")
-                
-            cb_model = CatBoostClassifier()
-            cb_model.load_model(model_path)
-            models[name] = cb_model
-            
-        return cls(**models)
+    def load_from_directory(cls, base_dir: str) -> EnsembleModels:
+        """Loads every ``<segment>_<view>/model.cb`` under a directory."""
+        root = Path(base_dir)
+        if not root.exists():
+            raise MLSystemFault("SYS-301", f"Model directory not found: {root}")
+
+        models: dict[str, dict[str, CatBoostClassifier]] = {}
+        for artifact in sorted(root.glob("*/model.cb")):
+            name = artifact.parent.name
+            if "_" not in name:
+                logger.warning("Skipping unrecognised model directory: %s", name)
+                continue
+            segment, view = name.rsplit("_", 1)
+            model = CatBoostClassifier()
+            model.load_model(str(artifact))
+            models.setdefault(segment, {})[view] = model
+
+        if not models:
+            raise MLSystemFault("SYS-301", f"No model artifacts found under {root}")
+
+        total = sum(len(v) for v in models.values())
+        logger.info("Loaded %d models across %d segments", total, len(models))
+        return cls(models=models)
+
+    @property
+    def segments(self) -> list[str]:
+        return sorted(self.models)
+
+    def score(self, frame: pd.DataFrame, segment: str) -> pd.Series:
+        """Averages the per-view churn probabilities for one segment's rows."""
+        if segment not in self.models:
+            raise MLSystemFault("SYS-401", f"No trained model for segment {segment!r}")
+
+        probabilities = []
+        for view, model in self.models[segment].items():
+            features = build_view(frame, view)
+            cat_features = [c for c in features.columns if features[c].dtype == "object"]
+            pool = Pool(features, cat_features=cat_features)
+            probabilities.append(model.predict_proba(pool)[:, 1])
+
+        stacked = pd.DataFrame(probabilities).T
+        return stacked.mean(axis=1).set_axis(frame.index)
+
+
+def band_for(score: float) -> tuple[str, str]:
+    """Maps a probability onto its (risk band, recommended action)."""
+    for threshold, band, action in RISK_BANDS:
+        if score >= threshold:
+            return band, action
+    return "low", "monitor"
