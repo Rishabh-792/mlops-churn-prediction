@@ -202,7 +202,13 @@ a live endpoint** — it is reference code, and `deployment/deploy_sagemaker.py`
 sketches the provisioning path. Treat the AWS portion as a design artifact rather than a
 running system.
 
-## Roadmap
+## Status and roadmap
+
+**Complete at v1.0.0, not under active development.** A reference pipeline
+meant to be read and run, not a maintained dependency. CI is green on Python
+3.10/3.11/3.12 and retrains on every push. The items below are known gaps
+rather than planned work — the ensemble being unscored and the Optuna module
+being unwired are real limitations of what is here, not a queue.
 
 - **Score the ensemble.** `metrics.json` currently reports the six per-view
   models; the averaged ensemble that actually scores customers is unmeasured.
