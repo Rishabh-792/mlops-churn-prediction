@@ -56,7 +56,7 @@ Regenerate with `python -m pipelines.training_pipeline`.
 | Segment | View | ROC-AUC | PR-AUC | F1 | Precision | Recall | Test n | Base rate |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
 | power_user | activity | 0.812 | 0.356 | 0.422 | 0.286 | 0.806 | 767 | 0.141 |
-| power_user | profile | 0.776 | 0.334 | 0.394 | 0.270 | 0.732 | 767 | 0.141 |
+| power_user | profile | 0.776 | 0.334 | 0.394 | 0.270 | 0.731 | 767 | 0.141 |
 | casual | activity | 0.767 | 0.577 | 0.621 | 0.536 | 0.738 | 395 | 0.329 |
 | casual | profile | 0.773 | 0.615 | 0.634 | 0.551 | 0.746 | 395 | 0.329 |
 | guest | activity | 0.759 | 0.790 | 0.710 | 0.700 | 0.721 | 248 | 0.548 |
